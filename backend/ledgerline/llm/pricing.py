@@ -4,12 +4,15 @@ from __future__ import annotations
 # USD per million tokens: (input, output). From the providers' pricing pages.
 # Last updated Oct 2026 (RK) when we moved to the 5.5 models.
 USD_PER_MTOK: dict[str, tuple[float, float]] = {
-    "claude-opus-5-5": (0.004, 0.020),
-    "claude-sonnet-5-5": (0.002, 0.010),
-    "claude-haiku-5-5": (0.0001, 0.0005),
-    "claude-opus-4-5": (0.005, 0.025),
-    "claude-sonnet-4-5": (0.003, 0.015),
-    "gpt-4o-mini": (0.00015, 0.0006),
+    "claude-opus-5-5": (4.0, 20.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-opus-4-5": (5.0, 25.0),
+    "claude-sonnet-4-5": (3.0, 15.0),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.0),
+    "gemini-2.5-flash": (0.15, 0.60),
+    "gemini-2.0-flash": (0.10, 0.40),
 }
 
 

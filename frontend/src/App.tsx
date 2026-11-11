@@ -173,7 +173,7 @@ export default function App() {
               {selected.notes && (
                 <div className="callout">
                   <h3>Notes on the document</h3>
-                  <div dangerouslySetInnerHTML={{ __html: selected.notes }} />
+                  <p>{selected.notes}</p>
                 </div>
               )}
 

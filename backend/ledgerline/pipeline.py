@@ -57,11 +57,9 @@ def process_document(
 ) -> dict:
     data, responses = extract(raw_text, ref)
     inv = normalize(data)
-    warnings = run_checks(conn, ref, inv)
-
-    # v0.3: the model applies the AP policy itself (it has the full policy text in its prompt).
-    needs_review = bool(data.get("requires_review", False))
-    review_reasons = list(data.get("review_reasons") or [])
+    review_reasons = list(dict.fromkeys(run_checks(conn, ref, inv, raw_text)))
+    warnings = list(review_reasons)
+    needs_review = len(review_reasons) > 0
     required_approvals = 2 if (inv.total or 0) > HIGH_VALUE_THRESHOLD else 1
     status = "needs_review" if needs_review else "ready_for_approval"
 

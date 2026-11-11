@@ -7,13 +7,21 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
 
 from .models import Invoice
 from .reference import ReferenceData
 
 GSTIN_PATTERN = re.compile(r"\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]")
 GSTIN_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-BUYER_STATE_CODE = 27  # Maharashtra
+BUYER_STATE_CODE = "27"  # Maharashtra
+
+
+def _to_dec(value: float | str | Decimal | None) -> Decimal:
+    if value is None:
+        return Decimal("0.00")
+    return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def gstin_checksum(first14: str) -> str:
@@ -28,14 +36,53 @@ def is_valid_gstin(gstin: str | None) -> bool:
     """Validate a GSTIN's format and check digit."""
     if not gstin:
         return False
-    return GSTIN_PATTERN.match(gstin.strip().upper()) is not None
+    cleaned = gstin.strip().upper()
+    if GSTIN_PATTERN.fullmatch(cleaned) is None:
+        return False
+    return gstin_checksum(cleaned[:14]) == cleaned[14]
 
 
-def find_vendor(ref: ReferenceData, supplier_name: str | None) -> dict | None:
-    if not supplier_name:
+def _norm_legal_name(name: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def supplier_key(inv: Invoice) -> str | None:
+    """Supplier key per AP Policy Section 1: GSTIN for domestic (INR), normalized legal name for foreign."""
+    if (inv.currency or "INR").upper() == "INR":
+        gstin = (inv.supplier_gstin or "").strip().upper()
+        return gstin or None
+    key = _norm_legal_name(inv.supplier_name)
+    return key or None
+
+
+def find_vendor(ref: ReferenceData, inv_or_name: Invoice | str | None) -> dict | None:
+    if inv_or_name is None:
         return None
+    if isinstance(inv_or_name, Invoice):
+        key = supplier_key(inv_or_name)
+        if not key:
+            return None
+        if (inv_or_name.currency or "INR").upper() == "INR":
+            for vendor in ref.vendors:
+                if (vendor.get("gstin") or "").strip().upper() == key:
+                    return vendor
+            return None
+        for vendor in ref.vendors:
+            if _norm_legal_name(vendor.get("legal_name")) == key:
+                return vendor
+        return None
+
+    # Fallback when called with a string (GSTIN or legal name) in legacy callers/tests
+    raw = str(inv_or_name).strip()
+    if not raw:
+        return None
+    upper = raw.upper()
     for vendor in ref.vendors:
-        if vendor["legal_name"].strip().lower() == supplier_name.strip().lower():
+        if (vendor.get("gstin") or "").strip().upper() == upper:
+            return vendor
+    norm = _norm_legal_name(raw)
+    for vendor in ref.vendors:
+        if _norm_legal_name(vendor.get("legal_name")) == norm:
             return vendor
     return None
 
@@ -50,13 +97,18 @@ def check_gstin(inv: Invoice) -> list[str]:
     return []
 
 
-def check_tax_type(inv: Invoice) -> list[str]:
-    if not inv.supplier_gstin:
+def check_tax_type(inv: Invoice, ref: ReferenceData | None = None) -> list[str]:
+    if inv.currency != "INR" or not inv.supplier_gstin or len(inv.supplier_gstin.strip()) < 2:
         return []
-    intra_state = inv.supplier_gstin[:2] == BUYER_STATE_CODE
-    if intra_state and inv.igst > 0:
+    buyer_state = (
+        str(ref.buyer.get("state_code", BUYER_STATE_CODE)).strip()
+        if ref and ref.buyer
+        else str(BUYER_STATE_CODE)
+    )
+    intra_state = inv.supplier_gstin.strip()[:2] == buyer_state
+    if intra_state and _to_dec(inv.igst) > Decimal("0.00"):
         return ["tax_type_mismatch"]
-    if not intra_state and (inv.cgst > 0 or inv.sgst > 0):
+    if not intra_state and (_to_dec(inv.cgst) > Decimal("0.00") or _to_dec(inv.sgst) > Decimal("0.00")):
         return ["tax_type_mismatch"]
     return []
 
@@ -64,36 +116,137 @@ def check_tax_type(inv: Invoice) -> list[str]:
 def check_totals(inv: Invoice) -> list[str]:
     if inv.total is None:
         return []
-    computed = sum(item.amount for item in inv.line_items) + inv.cgst + inv.sgst + inv.igst
-    return [] if computed == inv.total else ["totals_mismatch"]
+    line_sum = sum((_to_dec(item.amount) for item in inv.line_items), Decimal("0.00"))
+    computed = (
+        line_sum
+        + _to_dec(inv.cgst)
+        + _to_dec(inv.sgst)
+        + _to_dec(inv.igst)
+        + _to_dec(inv.round_off)
+    )
+    return ["totals_mismatch"] if abs(computed - _to_dec(inv.total)) > Decimal("1.00") else []
+
+
+def normalize_invoice_number(invoice_number: str | None) -> str:
+    """Uppercase with spaces and '/ - # .' removed; leading zeros preserved (AP Policy Section 1)."""
+    return re.sub(r"[\s/\-#.]", "", (invoice_number or "").upper())
+
+
+def financial_year(value: date | str | None) -> str | None:
+    """Financial year (1 April to 31 March), e.g. '2026-27' (AP Policy Section 1)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, date):
+        d = value
+    else:
+        try:
+            d = date.fromisoformat(str(value).strip()[:10])
+        except ValueError:
+            return None
+    start = d.year if d.month >= 4 else d.year - 1
+    return f"{start}-{str(start + 1)[-2:]}"
+
+
+def _row_supplier_key(gstin: str | None, name: str | None, currency: str | None = None) -> str | None:
+    cleaned_gstin = (gstin or "").strip().upper()
+    if currency and currency.upper() != "INR":
+        return _norm_legal_name(name) or None
+    if cleaned_gstin:
+        return cleaned_gstin
+    return _norm_legal_name(name) or None
 
 
 def check_duplicate(conn: sqlite3.Connection, ref: ReferenceData, inv: Invoice) -> list[str]:
-    row = conn.execute(
-        "SELECT id FROM invoices WHERE supplier_name = ? AND invoice_number = ?",
-        (inv.supplier_name, inv.invoice_number),
-    ).fetchone()
-    if row:
-        return ["duplicate"]
+    if (inv.document_type or "invoice") == "credit_note":
+        return []
+    inv_key = supplier_key(inv)
+    inv_num = normalize_invoice_number(inv.invoice_number)
+    inv_fy = financial_year(inv.invoice_date)
+    if not inv_key or not inv_num or not inv_fy:
+        return []
+
+    rows = conn.execute(
+        "SELECT document_type, supplier_name, supplier_gstin, invoice_number, invoice_date, currency FROM invoices"
+    ).fetchall()
+    for row in rows:
+        if (row["document_type"] or "invoice") == "credit_note":
+            continue
+        r_key = _row_supplier_key(row["supplier_gstin"], row["supplier_name"], row["currency"])
+        r_num = normalize_invoice_number(row["invoice_number"])
+        r_fy = financial_year(row["invoice_date"])
+        if r_key == inv_key and r_num == inv_num and r_fy == inv_fy:
+            return ["duplicate"]
+
     for paid in ref.paid_invoices:
-        if paid["supplier_name"] == inv.supplier_name and paid["invoice_number"] == inv.invoice_number:
+        p_key = _row_supplier_key(paid.get("supplier_gstin"), paid.get("supplier_name"))
+        p_num = normalize_invoice_number(paid.get("invoice_number"))
+        p_fy = financial_year(paid.get("invoice_date"))
+        if p_key == inv_key and p_num == inv_num and p_fy == inv_fy:
             return ["duplicate"]
     return []
 
 
+def _digits_only(value: str | None) -> str:
+    return re.sub(r"\D", "", value or "")
+
+
 def check_bank_details(inv: Invoice, vendor: dict | None) -> list[str]:
-    if vendor and inv.ifsc and vendor.get("ifsc") and inv.ifsc != vendor["ifsc"]:
+    if not vendor:
+        return []
+    inv_acct = _digits_only(inv.bank_account)
+    inv_ifsc = (inv.ifsc or "").strip().upper()
+    if not inv_acct and not inv_ifsc:
+        return []
+    vendor_acct = _digits_only(vendor.get("bank_account"))
+    vendor_ifsc = (vendor.get("ifsc") or "").strip().upper()
+    if inv_acct and inv_acct != vendor_acct:
+        return ["bank_details_changed"]
+    if inv_ifsc and inv_ifsc != vendor_ifsc:
         return ["bank_details_changed"]
     return []
 
 
-def run_checks(conn: sqlite3.Connection, ref: ReferenceData, inv: Invoice) -> list[str]:
-    vendor = find_vendor(ref, inv.supplier_name)
+_HTML_OR_SCRIPT_RE = re.compile(
+    r"(?i)<\s*/?\s*(?:script|img|iframe|svg|object|embed|form|input|button|style|link|meta|body|div|span|a)\b"
+    r"|on(?:error|load|click|mouseover|focus)\s*="
+    r"|javascript\s*:"
+)
+_AI_INSTRUCTION_RE = re.compile(
+    r"(?i)\b(?:ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions"
+    r"|ai\s+assistants?"
+    r"|automated\s+(?:invoice\s+)?(?:processing|systems?)"
+    r"|ap\s+automation\s+system"
+    r"|requires_review"
+    r"|review_reasons"
+    r"|do\s+not\s+mention\s+this\s+note"
+    r"|skip\s+(?:all\s+)?checks?"
+    r"|system\s+prompt)\b"
+)
+
+
+def check_suspicious_content(inv: Invoice, raw_text: str | None = None) -> list[str]:
+    fragments = [
+        raw_text or "",
+        inv.notes or "",
+        inv.supplier_name or "",
+        *(item.description for item in inv.line_items if item.description),
+    ]
+    combined = "\n".join(fragments)
+    if _HTML_OR_SCRIPT_RE.search(combined) or _AI_INSTRUCTION_RE.search(combined):
+        return ["suspicious_content"]
+    return []
+
+
+def run_checks(
+    conn: sqlite3.Connection, ref: ReferenceData, inv: Invoice, raw_text: str | None = None
+) -> list[str]:
+    vendor = find_vendor(ref, inv)
     return (
         check_gstin(inv)
         + check_vendor(vendor)
-        + check_tax_type(inv)
+        + check_tax_type(inv, ref)
         + check_totals(inv)
         + check_duplicate(conn, ref, inv)
         + check_bank_details(inv, vendor)
+        + check_suspicious_content(inv, raw_text)
     )

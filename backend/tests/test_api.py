@@ -86,3 +86,26 @@ def test_two_approval_invoice_requires_distinct_approvers_and_creates_single_pay
     conn.close()
     assert payments == 1
 
+
+def test_pricing_usd_per_mtok_and_stats_cost(client, monkeypatch):
+    from ledgerline.llm.fake import FakeClient
+    from ledgerline.llm.pricing import cost_usd
+
+    # 1M input + 1M output on claude-opus-5-5 should be $4.00 + $20.00 = $24.00 (not $0.024)
+    assert cost_usd("claude-opus-5-5", 1_000_000, 1_000_000) == pytest.approx(24.0)
+    assert cost_usd("claude-sonnet-5-5", 1_000_000, 1_000_000) == pytest.approx(12.0)
+    assert cost_usd("gpt-4o-mini", 1_000_000, 1_000_000) == pytest.approx(0.75)
+
+    monkeypatch.setattr("ledgerline.extraction.get_client", lambda: FakeClient(model="claude-opus-5-5"))
+    uploaded = client.post("/api/invoices", files={"file": ("a.txt", b"text", "text/plain")}).json()
+    stats = client.get("/api/stats").json()
+    expected_usd = cost_usd(
+        "claude-opus-5-5",
+        uploaded["usage"]["input_tokens"],
+        uploaded["usage"]["output_tokens"],
+    )
+    assert stats["llm_cost_inr"] == pytest.approx(round(expected_usd * 88.0, 2))
+    assert stats["llm_cost_inr"] > 0.5  # Previously 1000x too small (< 0.001 INR)
+
+
+
