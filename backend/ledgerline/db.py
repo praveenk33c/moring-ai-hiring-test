@@ -42,14 +42,17 @@ CREATE TABLE IF NOT EXISTS approvals (
     invoice_id INTEGER NOT NULL REFERENCES invoices(id),
     user_id TEXT NOT NULL,
     note TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(invoice_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+    invoice_id INTEGER NOT NULL UNIQUE REFERENCES invoices(id),
     amount REAL NOT NULL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_invoice_user ON approvals(invoice_id, user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id);
 CREATE TABLE IF NOT EXISTS llm_calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     invoice_id INTEGER REFERENCES invoices(id),

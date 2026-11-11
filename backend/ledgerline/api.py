@@ -66,18 +66,44 @@ def approve_invoice(invoice_id: int, body: DecisionRequest, conn=Depends(get_con
     invoice = db.get_invoice(conn, invoice_id)
     if invoice is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if invoice["status"] == "approved":
+        approvals = conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM approvals WHERE invoice_id = ?", (invoice_id,)
+        ).fetchone()[0]
+        return {
+            "id": invoice_id,
+            "approvals": approvals,
+            "required_approvals": invoice["required_approvals"],
+            "status": "approved",
+        }
+
     conn.execute(
-        "INSERT INTO approvals (invoice_id, user_id, note) VALUES (?, ?, ?)", (invoice_id, body.user_id, body.note)
+        "INSERT OR IGNORE INTO approvals (invoice_id, user_id, note) VALUES (?, ?, ?)",
+        (invoice_id, body.user_id, body.note),
     )
-    approvals = conn.execute("SELECT COUNT(*) FROM approvals WHERE invoice_id = ?", (invoice_id,)).fetchone()[0]
+    approvals = conn.execute(
+        "SELECT COUNT(DISTINCT user_id) FROM approvals WHERE invoice_id = ?", (invoice_id,)
+    ).fetchone()[0]
     status = invoice["status"]
-    if approvals >= invoice["required_approvals"]:
+    if invoice["required_approvals"] > 0 and approvals >= invoice["required_approvals"]:
         status = "approved"
-        conn.execute("UPDATE invoices SET status = 'approved' WHERE id = ?", (invoice_id,))
-        conn.execute("INSERT INTO payments (invoice_id, amount) VALUES (?, ?)", (invoice_id, invoice["total"]))
+        cur = conn.execute(
+            "UPDATE invoices SET status = 'approved' WHERE id = ? AND status != 'approved'",
+            (invoice_id,),
+        )
+        if cur.rowcount == 1:
+            conn.execute(
+                "INSERT OR IGNORE INTO payments (invoice_id, amount) VALUES (?, ?)",
+                (invoice_id, invoice["total"]),
+            )
     conn.commit()
-    return {"id": invoice_id, "approvals": approvals, "required_approvals": invoice["required_approvals"],
-            "status": status}
+    return {
+        "id": invoice_id,
+        "approvals": approvals,
+        "required_approvals": invoice["required_approvals"],
+        "status": status,
+    }
 
 
 @app.post("/api/invoices/{invoice_id}/reject")

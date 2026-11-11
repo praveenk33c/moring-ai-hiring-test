@@ -22,12 +22,14 @@ export default function App() {
   const [selected, setSelected] = useState<Invoice | null>(null);
   const [note, setNote] = useState("");
   const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   // Keep the queue fresh while documents are being processed.
   useEffect(() => {
-    setInterval(() => {
+    const timer = setInterval(() => {
       listInvoices().then(setInvoices);
     }, 500);
+    return () => clearInterval(timer);
   }, []);
 
   async function open(id: number) {
@@ -50,17 +52,27 @@ export default function App() {
   }
 
   async function approve() {
-    if (!selected) return;
-    const result = await approveInvoice(selected.id, note);
-    setMessage(`Approval recorded (${result.approvals} of ${result.required_approvals})`);
-    setSelected(await getInvoice(selected.id));
+    if (!selected || submitting) return;
+    setSubmitting(true);
+    try {
+      const result = await approveInvoice(selected.id, note);
+      setMessage(`Approval recorded (${result.approvals} of ${result.required_approvals})`);
+      setSelected(await getInvoice(selected.id));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function reject() {
-    if (!selected) return;
-    await rejectInvoice(selected.id, note);
-    setMessage("Document rejected");
-    setSelected(await getInvoice(selected.id));
+    if (!selected || submitting) return;
+    setSubmitting(true);
+    try {
+      await rejectInvoice(selected.id, note);
+      setMessage("Document rejected");
+      setSelected(await getInvoice(selected.id));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -193,8 +205,17 @@ export default function App() {
               <div className="decision">
                 <textarea placeholder="Note for the audit log" value={note} onChange={(e) => setNote(e.target.value)} />
                 <div className="actions">
-                  <button onClick={approve}>Approve</button>
-                  <button className="secondary" onClick={reject}>
+                  <button
+                    onClick={approve}
+                    disabled={submitting || selected.status === "approved" || selected.status === "rejected"}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={reject}
+                    disabled={submitting || selected.status === "approved" || selected.status === "rejected"}
+                  >
                     Reject
                   </button>
                 </div>
