@@ -9,6 +9,7 @@ import re
 import sqlite3
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+from itertools import product as iter_product
 
 from .models import Invoice
 from .reference import ReferenceData
@@ -40,6 +41,73 @@ def is_valid_gstin(gstin: str | None) -> bool:
     if GSTIN_PATTERN.fullmatch(cleaned) is None:
         return False
     return gstin_checksum(cleaned[:14]) == cleaned[14]
+
+
+_DIGIT_POSITIONS = {0, 1, 7, 8, 9, 10}
+_LETTER_POSITIONS = {2, 3, 4, 5, 6, 11, 13}
+_LETTER_TO_DIGIT_OPTIONS: dict[str, tuple[str, ...]] = {
+    "O": ("0",),
+    "Q": ("0",),
+    "D": ("0",),
+    "I": ("1",),
+    "L": ("1",),
+    "Z": ("2",),
+    "S": ("5",),
+    "G": ("6",),
+    "B": ("8",),
+}
+_DIGIT_TO_LETTER_OPTIONS: dict[str, tuple[str, ...]] = {
+    "0": ("O", "D", "Q"),
+    "1": ("I", "L"),
+    "2": ("Z",),
+    "5": ("S",),
+    "6": ("G",),
+    "8": ("B",),
+}
+
+
+def repair_ocr_gstin(gstin: str | None, ref: ReferenceData) -> str | None:
+    """Deterministically repair OCR letter<->digit lookalikes in a 15-char GSTIN.
+
+    A candidate is accepted ONLY if it (1) matches a known vendor GSTIN in ref.vendors
+    and (2) passes structural + Appendix A checksum validation (is_valid_gstin).
+    Otherwise returns None so the document is flagged and routed to human review.
+    """
+    if not gstin:
+        return None
+    cleaned = gstin.strip().upper()
+    if len(cleaned) != 15:
+        return None
+    known_gstins = {
+        (v.get("gstin") or "").strip().upper()
+        for v in ref.vendors
+        if (v.get("gstin") or "").strip()
+    }
+    if cleaned in known_gstins and is_valid_gstin(cleaned):
+        return cleaned
+
+    char_choices: list[tuple[str, ...]] = []
+    for idx, ch in enumerate(cleaned):
+        if idx in _DIGIT_POSITIONS:
+            alts = _LETTER_TO_DIGIT_OPTIONS.get(ch, ())
+        elif idx in _LETTER_POSITIONS:
+            alts = _DIGIT_TO_LETTER_OPTIONS.get(ch, ())
+        else:
+            alts = _LETTER_TO_DIGIT_OPTIONS.get(ch, ()) + _DIGIT_TO_LETTER_OPTIONS.get(ch, ())
+        # Try OCR replacement(s) as well as keeping original character
+        seen: list[str] = []
+        for candidate_ch in (ch, *alts):
+            if candidate_ch not in seen:
+                seen.append(candidate_ch)
+        char_choices.append(tuple(seen))
+
+    for combo in iter_product(*char_choices):
+        candidate = "".join(combo)
+        if candidate == cleaned:
+            continue
+        if candidate in known_gstins and is_valid_gstin(candidate):
+            return candidate
+    return None
 
 
 def _norm_legal_name(name: str | None) -> str:

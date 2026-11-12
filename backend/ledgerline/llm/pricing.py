@@ -13,6 +13,12 @@ USD_PER_MTOK: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.0),
     "gemini-2.5-flash": (0.15, 0.60),
     "gemini-2.0-flash": (0.10, 0.40),
+    "gemini-flash-lite-latest": (0.10, 0.40),
+    "gemini-flash-latest": (0.15, 0.60),
+    "gemini-3-flash-preview": (0.15, 0.60),
+    "gemini-3.1-flash-lite-preview": (0.10, 0.40),
+    "gemini-3.1-flash-lite": (0.10, 0.40),
+    "deepseek-chat": (0.27, 1.10),
 }
 
 

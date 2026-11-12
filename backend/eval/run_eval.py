@@ -34,37 +34,76 @@ def main() -> None:
         rows = [json.loads(line) for line in f]
 
     correct = total = 0
-    routing_correct = false_ready = need_review_total = reasons_exact = approvals_correct = 0
-    for row in rows:
+    routing_correct = false_ready = false_review = need_review_total = clean_total = reasons_exact = approvals_correct = 0
+    latencies_ms: list[int] = []
+    costs_inr: list[float] = []
+    n_docs = len(rows)
+
+    for idx, row in enumerate(rows, 1):
         path = settings.data_dir / "invoices" / "dev" / row["filename"]
         expected = row["expected"]
         if expected.get("needs_review"):
             need_review_total += 1
+        else:
+            clean_total += 1
         try:
             got = process_document(conn, ref, path.read_text(encoding="utf-8"), row["document_id"])
         except Exception as exc:
-            print(f"failed {row['document_id']} (counted as failure): {exc}")
+            print(f"[{idx}/{n_docs}] {row['document_id']} FAILED (counted as failure): {exc}", flush=True)
             total += len(FIELDS)
             if expected.get("needs_review"):
                 routing_correct += 1  # fallback routes to needs_review
+            else:
+                false_review += 1
             continue
+
+        doc_correct = 0
         for field in FIELDS:
             total += 1
-            correct += _norm(got.get(field)) == _norm(expected.get(field))
-        if bool(got.get("needs_review")) == bool(expected.get("needs_review")):
+            matched = _norm(got.get(field)) == _norm(expected.get(field))
+            correct += matched
+            doc_correct += matched
+
+        route_ok = bool(got.get("needs_review")) == bool(expected.get("needs_review"))
+        if route_ok:
             routing_correct += 1
         if expected.get("needs_review") and not got.get("needs_review"):
             false_ready += 1
-        if set(got.get("review_reasons") or []) == set(expected.get("review_reasons") or []):
+        if not expected.get("needs_review") and got.get("needs_review"):
+            false_review += 1
+
+        reasons_ok = set(got.get("review_reasons") or []) == set(expected.get("review_reasons") or [])
+        if reasons_ok:
             reasons_exact += 1
         if got.get("required_approvals") == expected.get("required_approvals"):
             approvals_correct += 1
-    n_docs = len(rows)
-    print(f"Field accuracy: {correct}/{total} = {correct / total:.1%}")
-    print(f"Routing accuracy: {routing_correct}/{n_docs} = {routing_correct / n_docs:.1%}")
-    print(f"False-ready (missed reviews): {false_ready}/{need_review_total}")
+
+        usage = got.get("usage") or {}
+        lat = int(usage.get("latency_ms") or 0)
+        cost = float(usage.get("cost_inr") or 0.0)
+        latencies_ms.append(lat)
+        costs_inr.append(cost)
+        print(
+            f"[{idx:02d}/{n_docs}] {row['document_id']} | fields={doc_correct}/{len(FIELDS)} "
+            f"| route={'OK' if route_ok else 'MISMATCH'} | reasons={'OK' if reasons_ok else got.get('review_reasons')} "
+            f"| {lat}ms | ₹{cost:.4f}",
+            flush=True,
+        )
+
+    lat_sorted = sorted(latencies_ms) if latencies_ms else [0]
+    p50_ms = lat_sorted[len(lat_sorted) // 2]
+    p95_ms = lat_sorted[min(len(lat_sorted) - 1, int(len(lat_sorted) * 0.95))]
+    avg_cost = sum(costs_inr) / n_docs if n_docs else 0.0
+
+    print("-" * 72, flush=True)
+    print(f"Field accuracy:             {correct}/{total} = {correct / total:.1%}")
+    print(f"Routing accuracy:           {routing_correct}/{n_docs} = {routing_correct / n_docs:.1%}")
+    print(f"False-ready (missed review):{false_ready}/{need_review_total}")
+    print(f"False-review (over-flagged):{false_review}/{clean_total}")
     print(f"Exact review reasons match: {reasons_exact}/{n_docs} = {reasons_exact / n_docs:.1%}")
-    print(f"Required approvals match: {approvals_correct}/{n_docs} = {approvals_correct / n_docs:.1%}")
+    print(f"Required approvals match:   {approvals_correct}/{n_docs} = {approvals_correct / n_docs:.1%}")
+    print(f"Latency (p50 / p95):        {p50_ms} ms / {p95_ms} ms")
+    print(f"Avg LLM cost / document:    ₹{avg_cost:.4f} (total ₹{sum(costs_inr):.4f})", flush=True)
 
 
 if __name__ == "__main__":

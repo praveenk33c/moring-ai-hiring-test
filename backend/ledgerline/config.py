@@ -26,12 +26,20 @@ class Settings:
 
 
 def get_settings() -> Settings:
+    base_url = (
+        os.getenv("OPENAI_BASE_URL")
+        or os.getenv("deepseek_url_base_url")
+        or "https://api.openai.com/v1"
+    )
+    if base_url.endswith("/chat/completions"):
+        base_url = base_url[: -len("/chat/completions")]
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("deepseek_key")
     return Settings(
         llm_provider=os.getenv("LLM_PROVIDER", "anthropic"),
         llm_model=os.getenv("LLM_MODEL", "claude-opus-5-5"),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-        openai_base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        openai_base_url=base_url,
+        openai_api_key=api_key,
         db_path=os.getenv("LEDGERLINE_DB", str(REPO_ROOT / "backend" / "ledgerline.db")),
         data_dir=Path(os.getenv("LEDGERLINE_DATA", str(REPO_ROOT / "data"))),
         docs_dir=REPO_ROOT / "docs",

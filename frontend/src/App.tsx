@@ -24,12 +24,12 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // Keep the queue fresh while documents are being processed.
+  async function refreshList() {
+    setInvoices(await listInvoices());
+  }
+
   useEffect(() => {
-    const timer = setInterval(() => {
-      listInvoices().then(setInvoices);
-    }, 500);
-    return () => clearInterval(timer);
+    void refreshList();
   }, []);
 
   async function open(id: number) {
@@ -44,6 +44,7 @@ export default function App() {
     setMessage(`Processing ${file.name}…`);
     try {
       setSelected(await uploadInvoice(file));
+      await refreshList();
       setMessage(`Processed ${file.name}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -58,6 +59,9 @@ export default function App() {
       const result = await approveInvoice(selected.id, note);
       setMessage(`Approval recorded (${result.approvals} of ${result.required_approvals})`);
       setSelected(await getInvoice(selected.id));
+      await refreshList();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setSubmitting(false);
     }
@@ -70,6 +74,9 @@ export default function App() {
       await rejectInvoice(selected.id, note);
       setMessage("Document rejected");
       setSelected(await getInvoice(selected.id));
+      await refreshList();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setSubmitting(false);
     }
@@ -203,22 +210,27 @@ export default function App() {
               <pre className="document">{selected.raw_text}</pre>
 
               <div className="decision">
-                <textarea placeholder="Note for the audit log" value={note} onChange={(e) => setNote(e.target.value)} />
-                <div className="actions">
-                  <button
-                    onClick={approve}
-                    disabled={submitting || selected.status === "approved" || selected.status === "rejected"}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    className="secondary"
-                    onClick={reject}
-                    disabled={submitting || selected.status === "approved" || selected.status === "rejected"}
-                  >
-                    Reject
-                  </button>
-                </div>
+                {selected.status !== "approved" && selected.status !== "rejected" && (
+                  <>
+                    <textarea
+                      placeholder="Note for the audit log"
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                    />
+                    <div className="actions">
+                      {selected.required_approvals > 0 &&
+                        !selected.review_reasons.includes("duplicate") &&
+                        !selected.review_reasons.includes("credit_note") && (
+                          <button onClick={approve} disabled={submitting}>
+                            Approve
+                          </button>
+                        )}
+                      <button className="secondary" onClick={reject} disabled={submitting}>
+                        Reject
+                      </button>
+                    </div>
+                  </>
+                )}
                 <p className="hint">
                   Status: {label(selected.status)}. Approvals required: {selected.required_approvals}.
                 </p>

@@ -13,6 +13,7 @@ from ledgerline.validation import (
     check_vendor_new,
     find_vendor,
     is_valid_gstin,
+    repair_ocr_gstin,
     run_checks,
 )
 
@@ -270,6 +271,26 @@ def test_foreign_currency_flagged(conn, ref):
     )
     assert check_foreign_currency(usd_inv) == ["foreign_currency"]
     assert run_checks(conn, ref, usd_inv) == ["foreign_currency"]
+
+
+def test_ocr_gstin_repair_verifies_vendor_db_and_checksum(conn, ref):
+    # disp_01: Sitara's GSTIN 27AAKCS4821M1ZW has '8' OCR-garbled as 'B' -> 27AAKCS4B21M1ZW
+    assert repair_ocr_gstin("27AAKCS4B21M1ZW", ref) == "27AAKCS4821M1ZW"
+
+    # Bharat Abrasives (29AAGCB1178L1ZB): '1' at pos 7 garbled as 'I' -> 29AAGCBI178L1ZB
+    assert repair_ocr_gstin("29AAGCBI178L1ZB", ref) == "29AAGCB1178L1ZB"
+
+    # If repaired candidate is NOT in vendor master DB, return None and route to human review
+    unknown_garbled = "33ABCDEI234F1Z5"
+    assert repair_ocr_gstin(unknown_garbled, ref) is None
+    inv = make_invoice(supplier_name="Unknown Co", supplier_gstin=unknown_garbled)
+    reasons = run_checks(conn, ref, inv)
+    assert "gstin_invalid" in reasons
+    assert "vendor_unknown" in reasons
+
+    # dev_010: digit '3' changed to digit '6' (not a letter/digit OCR lookalike) must NOT auto-repair
+    assert repair_ocr_gstin("06AAEFO3690B1ZL", ref) is None
+
 
 
 
