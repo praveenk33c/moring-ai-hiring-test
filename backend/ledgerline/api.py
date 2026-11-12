@@ -67,6 +67,15 @@ def approve_invoice(invoice_id: int, body: DecisionRequest, conn=Depends(get_con
     if invoice is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
+    if invoice.get("document_type") == "credit_note" or invoice.get("required_approvals", 1) == 0:
+        raise HTTPException(status_code=400, detail="Credit notes cannot be approved for payment")
+
+    if "duplicate" in (invoice.get("review_reasons") or []):
+        raise HTTPException(status_code=400, detail="Invoices flagged as duplicate cannot be approved")
+
+    if invoice["status"] == "rejected":
+        raise HTTPException(status_code=400, detail="Rejected invoices cannot be approved")
+
     if invoice["status"] == "approved":
         approvals = conn.execute(
             "SELECT COUNT(DISTINCT user_id) FROM approvals WHERE invoice_id = ?", (invoice_id,)
@@ -78,10 +87,21 @@ def approve_invoice(invoice_id: int, body: DecisionRequest, conn=Depends(get_con
             "status": "approved",
         }
 
-    conn.execute(
+    if invoice["needs_review"] and not (body.note or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="An approver must record a note when approving a document that needed review",
+        )
+
+    cur_app = conn.execute(
         "INSERT OR IGNORE INTO approvals (invoice_id, user_id, note) VALUES (?, ?, ?)",
         (invoice_id, body.user_id, body.note),
     )
+    if cur_app.rowcount == 1:
+        conn.execute(
+            "INSERT INTO audit_log (invoice_id, document_id, action, user_id, note) VALUES (?, ?, 'approve', ?, ?)",
+            (invoice_id, invoice["document_id"], body.user_id, body.note),
+        )
     approvals = conn.execute(
         "SELECT COUNT(DISTINCT user_id) FROM approvals WHERE invoice_id = ?", (invoice_id,)
     ).fetchone()[0]
@@ -108,8 +128,18 @@ def approve_invoice(invoice_id: int, body: DecisionRequest, conn=Depends(get_con
 
 @app.post("/api/invoices/{invoice_id}/reject")
 def reject_invoice(invoice_id: int, body: DecisionRequest, conn=Depends(get_conn)):
-    conn.execute("UPDATE invoices SET status = 'rejected' WHERE id = ?", (invoice_id,))
-    conn.commit()
+    invoice = db.get_invoice(conn, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice["status"] == "approved":
+        raise HTTPException(status_code=400, detail="Approved invoices cannot be rejected")
+    if invoice["status"] != "rejected":
+        conn.execute("UPDATE invoices SET status = 'rejected' WHERE id = ?", (invoice_id,))
+        conn.execute(
+            "INSERT INTO audit_log (invoice_id, document_id, action, user_id, note) VALUES (?, ?, 'reject', ?, ?)",
+            (invoice_id, invoice["document_id"], body.user_id, body.note),
+        )
+        conn.commit()
     return {"id": invoice_id, "status": "rejected"}
 
 

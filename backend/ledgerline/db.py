@@ -78,6 +78,15 @@ CREATE TABLE IF NOT EXISTS ai_logs (
     decision_json TEXT NOT NULL,
     timestamp TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+    document_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -132,4 +141,10 @@ def get_invoice(conn: sqlite3.Connection, invoice_id: int) -> dict | None:
         }
         for r in log_rows
     ]
+    audit_rows = conn.execute(
+        "SELECT id, invoice_id, document_id, action, user_id, note, created_at "
+        "FROM audit_log WHERE invoice_id = ? ORDER BY id ASC",
+        (invoice_id,),
+    ).fetchall()
+    inv["audit_log"] = [dict(r) for r in audit_rows]
     return inv

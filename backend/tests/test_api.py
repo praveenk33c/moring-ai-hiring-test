@@ -108,4 +108,69 @@ def test_pricing_usd_per_mtok_and_stats_cost(client, monkeypatch):
     assert stats["llm_cost_inr"] > 0.2  # Previously 1000x too small (0.00 INR when rounded)
 
 
+def test_server_side_approval_enforcement_and_audit_log(client, monkeypatch):
+    import json
+    from ledgerline.llm.fake import CANNED_EXTRACTION, FakeClient
+
+    # 1. Credit note cannot be approved for payment (Policy 4.1)
+    cn_payload = dict(CANNED_EXTRACTION, document_type="credit_note")
+    monkeypatch.setattr("ledgerline.extraction.get_client", lambda: FakeClient([json.dumps(cn_payload)]))
+    cn_inv = client.post("/api/invoices", files={"file": ("cn.txt", b"credit note", "text/plain")}).json()
+    res_cn = client.post(f"/api/invoices/{cn_inv['id']}/approve", json={"user_id": "kavya", "note": "try approve"})
+    assert res_cn.status_code == 400
+
+    # 2. Duplicate invoice cannot be approved, but can be rejected and is logged in audit_log (Policy 4.4 & 4.7)
+    dup_payload = dict(CANNED_EXTRACTION, invoice_number="SIS/26-27/0018", invoice_date="2026-04-02")
+    monkeypatch.setattr("ledgerline.extraction.get_client", lambda: FakeClient([json.dumps(dup_payload)]))
+    dup_inv = client.post("/api/invoices", files={"file": ("dup.txt", b"duplicate invoice", "text/plain")}).json()
+    assert "duplicate" in dup_inv["review_reasons"]
+    res_dup = client.post(f"/api/invoices/{dup_inv['id']}/approve", json={"user_id": "kavya", "note": "override"})
+    assert res_dup.status_code == 400
+
+    rej_dup = client.post(
+        f"/api/invoices/{dup_inv['id']}/reject",
+        json={"user_id": "kavya", "note": "Confirmed duplicate of paid invoice"},
+    )
+    assert rej_dup.status_code == 200
+    assert rej_dup.json()["status"] == "rejected"
+
+    # Rejected invoice cannot subsequently be approved
+    res_after_rej = client.post(
+        f"/api/invoices/{dup_inv['id']}/approve", json={"user_id": "sunil", "note": "try after reject"}
+    )
+    assert res_after_rej.status_code == 400
+
+    dup_detail = client.get(f"/api/invoices/{dup_inv['id']}").json()
+    assert len(dup_detail["audit_log"]) == 1
+    assert dup_detail["audit_log"][0]["action"] == "reject"
+    assert dup_detail["audit_log"][0]["user_id"] == "kavya"
+    assert dup_detail["audit_log"][0]["document_id"] == "dup"
+    assert dup_detail["audit_log"][0]["note"] == "Confirmed duplicate of paid invoice"
+    assert dup_detail["audit_log"][0]["created_at"]
+
+    # 3. Document with needs_review=True requires a non-empty note on approval (Policy 4.5 & 4.7)
+    rev_payload = dict(CANNED_EXTRACTION, ifsc="HDFC0009999")  # triggers bank_details_changed
+    monkeypatch.setattr("ledgerline.extraction.get_client", lambda: FakeClient([json.dumps(rev_payload)]))
+    rev_inv = client.post("/api/invoices", files={"file": ("rev.txt", b"review invoice", "text/plain")}).json()
+    assert rev_inv["needs_review"] is True
+
+    res_no_note = client.post(f"/api/invoices/{rev_inv['id']}/approve", json={"user_id": "kavya", "note": "   "})
+    assert res_no_note.status_code == 400
+
+    res_with_note = client.post(
+        f"/api/invoices/{rev_inv['id']}/approve",
+        json={"user_id": "kavya", "note": "Verified new IFSC with vendor treasury"},
+    )
+    assert res_with_note.status_code == 200
+    assert res_with_note.json()["status"] == "approved"
+
+    rev_detail = client.get(f"/api/invoices/{rev_inv['id']}").json()
+    assert len(rev_detail["audit_log"]) == 1
+    assert rev_detail["audit_log"][0]["action"] == "approve"
+    assert rev_detail["audit_log"][0]["user_id"] == "kavya"
+    assert rev_detail["audit_log"][0]["document_id"] == "rev"
+    assert rev_detail["audit_log"][0]["note"] == "Verified new IFSC with vendor treasury"
+
+
+
 

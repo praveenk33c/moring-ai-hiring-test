@@ -71,7 +71,11 @@ async function decide(id: number, action: "approve" | "reject", note: string): P
     headers: { ...orgHeaders, "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: CURRENT_USER, note }),
   });
-  return response.json();
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.detail || `Action failed (HTTP ${response.status})`);
+  }
+  return data;
 }
 
 export const approveInvoice = (id: number, note: string) => decide(id, "approve", note);

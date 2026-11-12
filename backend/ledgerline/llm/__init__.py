@@ -13,7 +13,7 @@ def get_client() -> LLMClient:
         from .anthropic_client import AnthropicClient
 
         return AnthropicClient(settings.anthropic_api_key, settings.llm_model)
-    if settings.llm_provider == "openai_compat":
+    if settings.llm_provider in ("openai_compat", "deepseek", "deepseek-chat"):
         from .openai_compat import OpenAICompatClient
 
         return OpenAICompatClient(settings.openai_base_url, settings.openai_api_key, settings.llm_model)

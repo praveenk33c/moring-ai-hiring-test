@@ -175,6 +175,62 @@ def test_to_contract_matches_ground_truth_schema_and_string_types(conn, ref, fak
         assert contract[key] == exp_val, f"Mismatch on {key}: got {contract[key]!r}, expected {exp_val!r}"
 
 
+def test_pipeline_ocr_gstin_repair_behind_flag(conn, ref, monkeypatch):
+    import json
+    from ledgerline.llm.fake import CANNED_EXTRACTION, FakeClient
+
+    garbled_sitara = dict(CANNED_EXTRACTION, supplier_gstin="27AAKCS4B21M1ZW")
+
+    # Flag off by default: follows literal written policy -> flagged gstin_invalid & vendor_unknown
+    monkeypatch.delenv("LEDGERLINE_FLAG_OCR_GSTIN_REPAIR", raising=False)
+    monkeypatch.setattr("ledgerline.extraction.get_client", lambda: FakeClient([json.dumps(garbled_sitara)]))
+    inv_off = process_document(conn, ref, "disp_01 text", "disp_01_off")
+    assert inv_off["needs_review"] is True
+    assert "gstin_invalid" in inv_off["review_reasons"]
+    assert "vendor_unknown" in inv_off["review_reasons"]
+
+    # Flag enabled: repairs B -> 8 after verifying vendor master DB + checksum -> ready_for_approval
+    monkeypatch.setenv("LEDGERLINE_FLAG_OCR_GSTIN_REPAIR", "1")
+    monkeypatch.setattr("ledgerline.extraction.get_client", lambda: FakeClient([json.dumps(garbled_sitara)]))
+    inv_on = process_document(conn, ref, "disp_01 text", "disp_01_on")
+    assert inv_on["supplier_gstin"] == "27AAKCS4821M1ZW"
+    assert inv_on["needs_review"] is False
+    assert inv_on["review_reasons"] == []
+
+
+def test_required_approvals_policy_rules(conn, ref, monkeypatch):
+    import json
+    from ledgerline.llm.fake import CANNED_EXTRACTION, FakeClient
+
+    # 1. Credit note -> 0 approvals (even when LLM outputs "credit note" with space or "CRN")
+    cn_payload = dict(CANNED_EXTRACTION, document_type="credit note", total=600000.0)
+    monkeypatch.setattr("ledgerline.extraction.get_client", lambda: FakeClient([json.dumps(cn_payload)]))
+    inv_cn = process_document(conn, ref, "credit note text", "doc_cn")
+    assert inv_cn["document_type"] == "credit_note"
+    assert inv_cn["required_approvals"] == 0
+    assert "credit_note" in inv_cn["review_reasons"]
+
+    # 2. Foreign currency (USD, even < 5,00,000) -> 2 approvals
+    fx_payload = dict(CANNED_EXTRACTION, currency="USD", total=4850.0)
+    monkeypatch.setattr("ledgerline.extraction.get_client", lambda: FakeClient([json.dumps(fx_payload)]))
+    inv_fx = process_document(conn, ref, "usd invoice text", "doc_fx")
+    assert inv_fx["required_approvals"] == 2
+
+    # 3. High value boundary: exactly 5,00,000.00 INR -> 2 approvals
+    hv_payload = dict(CANNED_EXTRACTION, currency="INR", total=500000.0)
+    monkeypatch.setattr("ledgerline.extraction.get_client", lambda: FakeClient([json.dumps(hv_payload)]))
+    inv_hv = process_document(conn, ref, "500k boundary invoice text", "doc_hv")
+    assert inv_hv["required_approvals"] == 2
+
+    # 4. Regular INR invoice < 5,00,000.00 -> 1 approval
+    reg_payload = dict(CANNED_EXTRACTION, currency="INR", total=99120.0)
+    monkeypatch.setattr("ledgerline.extraction.get_client", lambda: FakeClient([json.dumps(reg_payload)]))
+    inv_reg = process_document(conn, ref, "regular invoice text", "doc_reg")
+    assert inv_reg["required_approvals"] == 1
+
+
+
+
 
 
 
