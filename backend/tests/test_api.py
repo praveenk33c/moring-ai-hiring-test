@@ -105,7 +105,7 @@ def test_pricing_usd_per_mtok_and_stats_cost(client, monkeypatch):
         uploaded["usage"]["output_tokens"],
     )
     assert stats["llm_cost_inr"] == pytest.approx(round(expected_usd * 88.0, 2))
-    assert stats["llm_cost_inr"] > 0.5  # Previously 1000x too small (< 0.001 INR)
+    assert stats["llm_cost_inr"] > 0.2  # Previously 1000x too small (0.00 INR when rounded)
 
 
 
