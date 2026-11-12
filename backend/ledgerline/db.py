@@ -64,6 +64,20 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     latency_ms INTEGER,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS ai_logs (
+    log_id TEXT PRIMARY KEY,
+    invoice_id INTEGER REFERENCES invoices(id),
+    document_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    extraction_result_json TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    policy_version TEXT NOT NULL,
+    decision_json TEXT NOT NULL,
+    timestamp TEXT NOT NULL
+);
 """
 
 
@@ -95,4 +109,27 @@ def get_invoice(conn: sqlite3.Connection, invoice_id: int) -> dict | None:
         "cost_inr": round(usage["cost_usd"] * USD_TO_INR, 4),
         "latency_ms": usage["latency_ms"],
     }
+    log_rows = conn.execute(
+        "SELECT log_id, invoice_id, document_id, provider, model_version, prompt_version, prompt, "
+        "extraction_result_json, confidence, policy_version, decision_json, timestamp "
+        "FROM ai_logs WHERE invoice_id = ? ORDER BY rowid ASC",
+        (invoice_id,),
+    ).fetchall()
+    inv["ai_logs"] = [
+        {
+            "log_id": r["log_id"],
+            "invoice_id": r["invoice_id"],
+            "document_id": r["document_id"],
+            "provider": r["provider"],
+            "model_version": r["model_version"],
+            "prompt_version": r["prompt_version"],
+            "prompt": r["prompt"],
+            "extraction_result": json.loads(r["extraction_result_json"] or "{}"),
+            "confidence": r["confidence"],
+            "policy_version": r["policy_version"],
+            "decision": json.loads(r["decision_json"] or "{}"),
+            "timestamp": r["timestamp"],
+        }
+        for r in log_rows
+    ]
     return inv

@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from dataclasses import asdict
+from datetime import datetime, timezone
 
 from . import db
-from .extraction import extract
+from .config import get_settings
+from .extraction import POLICY_VERSION, PROMPT_VERSION, build_extraction_prompt, extract
 from .llm.pricing import cost_usd
 from .models import Invoice, LineItem
 from .parsing import parse_amount, parse_date
@@ -14,6 +17,20 @@ from .reference import ReferenceData
 from .validation import run_checks
 
 HIGH_VALUE_THRESHOLD = 500000  # invoices above this need two approvals
+_CORE_FIELDS = ("supplier_name", "invoice_number", "invoice_date", "currency", "subtotal", "total")
+
+
+def _compute_confidence(data: dict, inv: Invoice, review_reasons: list[str]) -> float:
+    raw_conf = data.get("confidence")
+    if isinstance(raw_conf, (int, float)) and 0.0 <= float(raw_conf) <= 1.0:
+        return round(float(raw_conf), 4)
+    present = sum(1 for f in _CORE_FIELDS if getattr(inv, f, None) not in (None, ""))
+    score = present / len(_CORE_FIELDS)
+    if "processing_error" in review_reasons or "totals_mismatch" in review_reasons:
+        score *= 0.6
+    elif review_reasons:
+        score *= 0.85
+    return round(score, 4)
 
 
 def normalize(data: dict) -> Invoice:
@@ -85,5 +102,33 @@ def process_document(
             (invoice_id, document_id, r.model, r.input_tokens, r.output_tokens,
              cost_usd(r.model, r.input_tokens, r.output_tokens), r.latency_ms),
         )
+
+    settings = get_settings()
+    model_version = responses[-1].model if responses else settings.llm_model
+    decision_snapshot = {
+        "status": status,
+        "needs_review": needs_review,
+        "review_reasons": review_reasons,
+        "required_approvals": required_approvals,
+    }
+    conn.execute(
+        """INSERT INTO ai_logs (log_id, invoice_id, document_id, provider, model_version, prompt_version,
+               prompt, extraction_result_json, confidence, policy_version, decision_json, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            str(uuid.uuid4()),
+            invoice_id,
+            document_id,
+            settings.llm_provider,
+            model_version,
+            PROMPT_VERSION,
+            build_extraction_prompt(raw_text, ref),
+            json.dumps(data, ensure_ascii=False),
+            _compute_confidence(data, inv, review_reasons),
+            POLICY_VERSION,
+            json.dumps(decision_snapshot, ensure_ascii=False),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
     conn.commit()
     return db.get_invoice(conn, invoice_id)

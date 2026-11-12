@@ -87,8 +87,35 @@ def find_vendor(ref: ReferenceData, inv_or_name: Invoice | str | None) -> dict |
     return None
 
 
+def check_credit_note(inv: Invoice) -> list[str]:
+    if (inv.document_type or "invoice").strip().lower() == "credit_note":
+        return ["credit_note"]
+    return []
+
+
 def check_vendor(vendor: dict | None) -> list[str]:
     return [] if vendor else ["vendor_unknown"]
+
+
+def check_vendor_new(inv: Invoice, vendor: dict | None) -> list[str]:
+    if not vendor or not inv.invoice_date:
+        return []
+    raw_onboarded = (vendor.get("onboarded_on") or "").strip()
+    if not raw_onboarded:
+        return []
+    try:
+        onboarded_date = date.fromisoformat(raw_onboarded[:10])
+    except ValueError:
+        return []
+    if (inv.invoice_date - onboarded_date).days < 90:
+        return ["vendor_new"]
+    return []
+
+
+def check_foreign_currency(inv: Invoice) -> list[str]:
+    if (inv.currency or "INR").strip().upper() != "INR":
+        return ["foreign_currency"]
+    return []
 
 
 def check_gstin(inv: Invoice) -> list[str]:
@@ -242,11 +269,14 @@ def run_checks(
 ) -> list[str]:
     vendor = find_vendor(ref, inv)
     return (
-        check_gstin(inv)
+        check_credit_note(inv)
+        + check_gstin(inv)
         + check_vendor(vendor)
+        + check_vendor_new(inv, vendor)
         + check_tax_type(inv, ref)
         + check_totals(inv)
         + check_duplicate(conn, ref, inv)
         + check_bank_details(inv, vendor)
+        + check_foreign_currency(inv)
         + check_suspicious_content(inv, raw_text)
     )

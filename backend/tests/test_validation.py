@@ -3,13 +3,17 @@ from datetime import date
 from ledgerline.models import Invoice, LineItem
 from ledgerline.validation import (
     check_bank_details,
+    check_credit_note,
     check_duplicate,
+    check_foreign_currency,
     check_suspicious_content,
     check_tax_type,
     check_totals,
     check_vendor,
+    check_vendor_new,
     find_vendor,
     is_valid_gstin,
+    run_checks,
 )
 
 SITARA_GSTIN = "27AAKCS4821M1ZW"
@@ -223,6 +227,50 @@ def test_duplicate_in_batch_matches_by_gstin_and_ignores_credit_notes(conn, ref)
         invoice_date=date(2026, 4, 2),
     )
     assert check_duplicate(conn, ref, credit_note) == []
+
+
+def test_credit_note_flagged_in_checks(conn, ref):
+    # dev_007: credit_note is flagged with ["credit_note"]
+    cn = make_invoice(document_type="credit_note")
+    assert check_credit_note(cn) == ["credit_note"]
+    assert "credit_note" in run_checks(conn, ref, cn)
+    assert check_credit_note(make_invoice(document_type="invoice")) == []
+
+
+def test_vendor_new_fewer_than_90_days_flagged(conn, ref):
+    # dev_011: Shakti Castings onboarded 2026-03-20, invoice dated 2026-04-12 (23 days < 90)
+    shakti_inv = make_invoice(
+        supplier_name="Shakti Castings Pvt. Ltd.",
+        supplier_gstin="27AAPCS5512H1Z4",
+        invoice_date=date(2026, 4, 12),
+    )
+    vendor = find_vendor(ref, shakti_inv)
+    assert check_vendor_new(shakti_inv, vendor) == ["vendor_new"]
+    assert "vendor_new" in run_checks(conn, ref, shakti_inv)
+
+    # Boundary: 89 days (< 90) is flagged; 90 days is NOT flagged
+    day_89 = make_invoice(supplier_gstin="27AAPCS5512H1Z4", invoice_date=date(2026, 6, 17))
+    day_90 = make_invoice(supplier_gstin="27AAPCS5512H1Z4", invoice_date=date(2026, 6, 18))
+    assert check_vendor_new(day_89, vendor) == ["vendor_new"]
+    assert check_vendor_new(day_90, vendor) == []
+
+
+def test_foreign_currency_flagged(conn, ref):
+    # dev_014: CloudNimbus Inc. billed in USD
+    usd_inv = make_invoice(
+        supplier_name="CloudNimbus Inc.",
+        supplier_gstin=None,
+        currency="USD",
+        subtotal=1298.0,
+        cgst=0.0,
+        sgst=0.0,
+        igst=0.0,
+        total=1298.0,
+        line_items=[LineItem("Nimbus Analytics", 25.0, 50.0, 1250.0), LineItem("Overage", 12.0, 4.0, 48.0)],
+    )
+    assert check_foreign_currency(usd_inv) == ["foreign_currency"]
+    assert run_checks(conn, ref, usd_inv) == ["foreign_currency"]
+
 
 
 
