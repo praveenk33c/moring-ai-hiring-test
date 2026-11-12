@@ -87,20 +87,51 @@ def restore_bank_account(value: str | None, vault: dict[str, str]) -> str | None
     return cleaned
 
 
-def _few_shot_examples(ref: ReferenceData | None = None, limit: int = 3) -> str:
-    """A few labelled examples so the model learns our exact output format (with bank accounts masked)."""
-    data_dir = get_settings().data_dir
-    blocks = []
-    with open(data_dir / "ground_truth" / "dev.jsonl", encoding="utf-8") as f:
-        for line in list(f)[:limit]:
-            row = json.loads(line)
-            doc = (data_dir / "invoices" / "dev" / row["filename"]).read_text(encoding="utf-8")
-            masked_doc, _ = mask_bank_accounts(doc, ref)
-            expected = dict(row["expected"])
-            if expected.get("bank_account"):
-                expected["bank_account"] = mask_account_number(expected["bank_account"])
-            blocks.append(f"DOCUMENT:\n{masked_doc}\nOUTPUT:\n{json.dumps(expected)}")
-    return "\n\n".join(blocks)
+_SYNTHETIC_EXAMPLE_DOC = """\
+ACME METALS PVT. LTD. | GSTIN: 27AAPFU0939F1ZV
+TAX INVOICE No: ACM/26-27/0001 | Dated: 10/04/2026 | PO: PO-2026-0001
+1. M6 Hex Bolt (Box/100) | Qty: 10 | Rate: 500.00 | Amount: 5,000.00
+Sub Total: 5,000.00 | CGST 9%: 450.00 | SGST 9%: 450.00 | Round Off: 0.00 | Total: ₹ 5,900.00
+Bank: Example Bank | A/c No: **********0000 | IFSC: EXMP0000001"""
+
+_SYNTHETIC_EXAMPLE_OUT = {
+    "document_type": "invoice",
+    "supplier_name": "Acme Metals Pvt. Ltd.",
+    "supplier_gstin": "27AAPFU0939F1ZV",
+    "invoice_number": "ACM/26-27/0001",
+    "invoice_date": "2026-04-10",
+    "currency": "INR",
+    "subtotal": "5000.00",
+    "cgst": "450.00",
+    "sgst": "450.00",
+    "igst": "0.00",
+    "round_off": "0.00",
+    "total": "5900.00",
+    "bank_account": "**********0000",
+    "ifsc": "EXMP0000001",
+    "po_number": "PO-2026-0001",
+    "notes": None,
+    "line_items": [
+        {
+            "description": "M6 Hex Bolt (Box/100)",
+            "quantity": "10",
+            "unit_price": "500.00",
+            "amount": "5000.00",
+        }
+    ],
+}
+
+
+def _few_shot_examples(ref: ReferenceData | None = None) -> str:
+    """Static synthetic example so the model learns our output format without leaking dev.jsonl."""
+    return f"DOCUMENT:\n{_SYNTHETIC_EXAMPLE_DOC}\nOUTPUT:\n{json.dumps(_SYNTHETIC_EXAMPLE_OUT)}"
+
+
+def _parse_json_object(raw_text: str) -> dict:
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE | re.DOTALL).strip()
+    return json.loads(cleaned)
 
 
 def build_extraction_prompt(document_text: str, ref: ReferenceData) -> str:
@@ -124,6 +155,6 @@ def extract(document_text: str, ref: ReferenceData) -> tuple[dict, list[LLMRespo
     masked_doc, vault = mask_bank_accounts(document_text, ref)
     client = get_client()
     first = client.complete(SYSTEM_PROMPT, build_extraction_prompt(masked_doc, ref))
-    data = json.loads(first.text)
+    data = _parse_json_object(first.text)
     data["bank_account"] = restore_bank_account(data.get("bank_account"), vault)
     return data, [first]

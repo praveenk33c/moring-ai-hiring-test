@@ -34,17 +34,37 @@ def main() -> None:
         rows = [json.loads(line) for line in f]
 
     correct = total = 0
+    routing_correct = false_ready = need_review_total = reasons_exact = approvals_correct = 0
     for row in rows:
         path = settings.data_dir / "invoices" / "dev" / row["filename"]
+        expected = row["expected"]
+        if expected.get("needs_review"):
+            need_review_total += 1
         try:
             got = process_document(conn, ref, path.read_text(encoding="utf-8"), row["document_id"])
         except Exception as exc:
-            print(f"skipping {row['document_id']}: {exc}")
+            print(f"failed {row['document_id']} (counted as failure): {exc}")
+            total += len(FIELDS)
+            if expected.get("needs_review"):
+                routing_correct += 1  # fallback routes to needs_review
             continue
         for field in FIELDS:
             total += 1
-            correct += _norm(got.get(field)) == _norm(row["expected"].get(field))
+            correct += _norm(got.get(field)) == _norm(expected.get(field))
+        if bool(got.get("needs_review")) == bool(expected.get("needs_review")):
+            routing_correct += 1
+        if expected.get("needs_review") and not got.get("needs_review"):
+            false_ready += 1
+        if set(got.get("review_reasons") or []) == set(expected.get("review_reasons") or []):
+            reasons_exact += 1
+        if got.get("required_approvals") == expected.get("required_approvals"):
+            approvals_correct += 1
+    n_docs = len(rows)
     print(f"Field accuracy: {correct}/{total} = {correct / total:.1%}")
+    print(f"Routing accuracy: {routing_correct}/{n_docs} = {routing_correct / n_docs:.1%}")
+    print(f"False-ready (missed reviews): {false_ready}/{need_review_total}")
+    print(f"Exact review reasons match: {reasons_exact}/{n_docs} = {reasons_exact / n_docs:.1%}")
+    print(f"Required approvals match: {approvals_correct}/{n_docs} = {approvals_correct / n_docs:.1%}")
 
 
 if __name__ == "__main__":

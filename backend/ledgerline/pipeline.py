@@ -14,7 +14,7 @@ from .llm.pricing import cost_usd
 from .models import Invoice, LineItem
 from .parsing import parse_amount, parse_date
 from .reference import ReferenceData
-from .validation import run_checks
+from .validation import check_suspicious_content, run_checks
 
 HIGH_VALUE_THRESHOLD = 500000  # invoices above this need two approvals
 _CORE_FIELDS = ("supplier_name", "invoice_number", "invoice_date", "currency", "subtotal", "total")
@@ -72,9 +72,20 @@ def process_document(
     org_id: str = "meridian",
     filename: str | None = None,
 ) -> dict:
-    data, responses = extract(raw_text, ref)
-    inv = normalize(data)
-    review_reasons = list(dict.fromkeys(run_checks(conn, ref, inv, raw_text)))
+    try:
+        data, responses = extract(raw_text, ref)
+        inv = normalize(data)
+        processing_failed = inv.supplier_name is None and inv.total is None and inv.invoice_number is None
+    except Exception:
+        data = {}
+        responses = []
+        inv = normalize({})
+        processing_failed = True
+
+    if processing_failed:
+        review_reasons = list(dict.fromkeys(["processing_error"] + check_suspicious_content(inv, raw_text)))
+    else:
+        review_reasons = list(dict.fromkeys(run_checks(conn, ref, inv, raw_text)))
     warnings = list(review_reasons)
     needs_review = len(review_reasons) > 0
     required_approvals = 2 if (inv.total or 0) > HIGH_VALUE_THRESHOLD else 1
