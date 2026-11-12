@@ -14,6 +14,9 @@ FIELDS = [
     "notes", "line_items",
 ]
 
+PROMPT_VERSION = "v1.0"
+POLICY_VERSION = "3.2"
+
 SYSTEM_PROMPT = (
     "You are Ledgerline, an expert accounts-payable assistant for Meridian Precision Components "
     "Pvt. Ltd. You read vendor documents, extract their data and apply Meridian's AP policy. "

@@ -78,3 +78,36 @@ def test_routing_is_decided_deterministically_by_code_not_llm(conn, ref, monkeyp
     assert ref.policy_text not in client.calls[0][1]
 
 
+def test_ai_decision_snapshot_logged_with_unique_uuid(conn, ref, fake_llm):
+    import uuid
+
+    inv1 = process_document(conn, ref, "INVOICE TEXT 1", "doc_snap_1")
+    inv2 = process_document(conn, ref, "INVOICE TEXT 2", "doc_snap_2")
+
+    assert len(inv1["ai_logs"]) == 1
+    assert len(inv2["ai_logs"]) == 1
+    log1 = inv1["ai_logs"][0]
+    log2 = inv2["ai_logs"][0]
+
+    # Each snapshot log has a valid, unique UUID
+    uuid.UUID(log1["log_id"])
+    uuid.UUID(log2["log_id"])
+    assert log1["log_id"] != log2["log_id"]
+
+    assert log1["provider"] in ("anthropic", "openai_compat", "fake")
+    assert log1["model_version"] == "fake"
+    assert log1["prompt_version"] == "v1.0"
+    assert "INVOICE TEXT 1" in log1["prompt"]
+    assert log1["extraction_result"]["invoice_number"] == "SIS/26-27/0042"
+    assert 0.0 <= log1["confidence"] <= 1.0
+    assert log1["policy_version"] == "3.2"
+    assert log1["decision"] == {
+        "status": "ready_for_approval",
+        "needs_review": False,
+        "review_reasons": [],
+        "required_approvals": 1,
+    }
+    assert log1["timestamp"].endswith("+00:00") or log1["timestamp"].endswith("Z")
+
+
+
